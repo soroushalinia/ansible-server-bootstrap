@@ -1,0 +1,81 @@
+---
+# ============================================================================
+# ansible-server-bootstrap. All configuration lives here.
+# Every value below is safe to run as is on Ubuntu 22.04/24.04 or Debian 12/13
+# (x86_64/arm64).
+# ============================================================================
+
+# Managed admin user
+admin_user: admin
+admin_sudo_nopasswd: true
+
+# SSH key for the admin user.
+#   - Set this to YOUR public key (string starting with ssh-ed25519/rsa/ecdsa).
+#   - Leave "" to have the playbook generate an ed25519 keypair locally under
+#     keys/<inventory_hostname>/ and print the public key at the end.
+admin_ssh_public_key: ""
+
+# SSH daemon hardening
+ssh_port: 22
+ssh_password_auth: false
+ssh_permit_root_login: false
+ssh_allow_users: "{{ admin_user }}"   # space separated, or "" to skip AllowUsers
+ssh_allow_groups: ""                  # optional, e.g. "ssh-users". If both are
+                                      # set, a user must match BOTH AllowUsers
+                                      # and AllowGroups to log in.
+ssh_max_auth_tries: 5
+ssh_login_grace_time: 30
+# Modern-only crypto, safe for OpenSSH 8.9+ (Ubuntu 22.04+, Debian 12+).
+# If you connect from an older client, add its algorithms to these lists
+# and rerun with -t ssh. sshd -t validates the file before it is applied.
+ssh_kex_algorithms: "curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group14-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521"
+ssh_ciphers: "chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com"
+ssh_macs: "hmac-sha2-256,hmac-sha2-512,hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,umac-128-etm@openssh.com,umac-128@openssh.com"
+
+# Apt mirror (optional)
+# Empty string = stock archives. Set to rewrite the deb822 sources
+# (ubuntu.sources / debian.sources) to a local/regional mirror, e.g.:
+#   apt_mirror: "https://mirror.example.internal/ubuntu"
+apt_mirror: ""
+
+# Docker
+# List of registry mirrors used for image pulls (daemon.json registry-mirrors),
+# e.g. ["https://registry-mirror.example.internal"] or an internal Harbor.
+docker_registry_mirrors: []
+# Set to false if you need --net=host or raw host networking edge cases.
+docker_live_restore: true
+
+# node_exporter (Prometheus)
+node_exporter_version: "1.12.1"
+node_exporter_checksums:
+  amd64: "b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63"
+  arm64: "ad35b605f9954b9f1ffddf5ba054bdc5a98d790b9eae5291e1eeb83f1ecbd0e7"
+# Who may scrape :9100.
+#   - Empty (default): ufw keeps port 9100 closed, metrics are only reachable
+#     from the box itself. Set this to your Prometheus server's CIDR to
+#     expose them, e.g. "10.0.0.0/8".
+#   - "0.0.0.0/0": open to anyone on the internet. Only for truly public
+#     endpoints; prefer restricting to your monitoring network.
+node_exporter_allow_cidr: ""
+node_exporter_listen: "0.0.0.0:9100"
+
+# Firewall (ufw)
+# Extra inbound allow rules, e.g.:
+#   ufw_extra_allow:
+#     "8080": tcp
+ufw_extra_allow: {}
+
+# unattended-upgrades
+unattended_reboot: true
+unattended_reboot_time: "03:00"
+unattended_remove_unused_deps: true
+
+# fail2ban
+fail2ban_bantime: "10m"
+fail2ban_findtime: "10m"
+fail2ban_maxretry: "5"
+
+# Misc
+timezone: UTC
+# Reboot after apt upgrade when /var/run/reboot-required appears.
+allow_reboot: true

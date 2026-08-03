@@ -1,0 +1,30 @@
+# SSH daemon hardening. Managed by ansible-server-bootstrap.
+Port {{ ssh_port }}
+PermitRootLogin {{ 'yes' if ssh_permit_root_login else 'no' }}
+PasswordAuthentication {{ 'yes' if ssh_password_auth else 'no' }}
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+PrintMotd no
+MaxAuthTries {{ ssh_max_auth_tries }}
+MaxSessions 10
+LoginGraceTime {{ ssh_login_grace_time }}
+ClientAliveInterval 300
+ClientAliveCountMax 2
+{% if not ssh_password_auth %}
+AuthenticationMethods publickey
+{% endif %}
+KexAlgorithms {{ ssh_kex_algorithms }}
+Ciphers {{ ssh_ciphers }}
+MACs {{ ssh_macs }}
+{% if ssh_allow_users | length > 0 %}
+AllowUsers {{ ssh_allow_users }}
+{% endif %}
+{% if ssh_allow_groups | length > 0 %}
+AllowGroups {{ ssh_allow_groups }}
+{% endif %}

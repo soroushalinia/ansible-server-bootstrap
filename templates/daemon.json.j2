@@ -1,0 +1,22 @@
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  },
+  "live-restore": {{ docker_live_restore | lower }},
+  "icc": false,
+{% if docker_registry_mirrors is string %}
+{% set mirrors = docker_registry_mirrors | regex_replace('^\[|\]$', '') | split(',') | map('replace', '"', '') | map('trim') | reject('equalto', '') | list %}
+{% else %}
+{% set mirrors = docker_registry_mirrors %}
+{% endif %}
+{% if mirrors | length > 0 %}
+  "registry-mirrors": [
+{% for mirror in mirrors %}
+    "{{ mirror }}"{{ "," if not loop.last else "" }}
+{% endfor %}
+  ],
+{% endif %}
+  "userland-proxy": false
+}
