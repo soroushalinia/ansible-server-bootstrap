@@ -1,4 +1,4 @@
-# SSH daemon hardening. Managed by ansible-server-bootstrap.
+# SSH settings. Managed by ansible-server-bootstrap.
 Port {{ ssh_port }}
 PermitRootLogin {{ 'yes' if ssh_permit_root_login else 'no' }}
 PasswordAuthentication {{ 'yes' if ssh_password_auth else 'no' }}
@@ -8,8 +8,8 @@ KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 UsePAM yes
 X11Forwarding no
-AllowAgentForwarding no
-AllowTcpForwarding no
+AllowAgentForwarding {{ 'yes' if ssh_allow_agent_forwarding else 'no' }}
+AllowTcpForwarding {{ 'yes' if ssh_allow_tcp_forwarding else 'no' }}
 PrintMotd no
 MaxAuthTries {{ ssh_max_auth_tries }}
 MaxSessions 10

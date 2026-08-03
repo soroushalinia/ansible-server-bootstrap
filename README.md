@@ -1,7 +1,8 @@
 # ansible-server-bootstrap
 
-One Ansible playbook that sets up a brand new Ubuntu or Debian server the way
-a careful engineer would on day one:
+My personal day-one setup for fresh Ubuntu or Debian servers, in one Ansible
+playbook. I got tired of doing the same ten steps by hand on every box, so
+this exists: run it once, and the machine comes up the way I always want it:
 
 - a dedicated admin user with key based SSH login (passwords disabled,
   modern crypto only: key exchange, ciphers and MACs are pinned to
@@ -12,6 +13,10 @@ a careful engineer would on day one:
 - fail2ban, which blocks IPs that try to guess your SSH password
 - node_exporter, a small monitoring agent for Prometheus on port 9100
 - optional support for an apt mirror and a Docker registry mirror
+
+None of that is exotic hardening - it is the baseline I want on every box.
+Everything optional (extra packages, hostname, locale, motd cleanup, locking
+out the cloud user) is off by default and one line in a config file away.
 
 There are no roles, no plugins, no galaxy glue. One playbook file. It is safe
 to run once, twice, or a hundred times: Ansible only changes what needs
@@ -29,8 +34,8 @@ ubuntu@server1:~$ docker --version
 bash: docker: command not found
 ```
 
-**After. One run of the playbook.** The box is locked down, and everything
-is running and verified.
+**After. One run of the playbook.** The box has my default setup, and
+everything is running and verified.
 
 ```
 admin@server1:~$ sudo ufw status verbose
@@ -160,7 +165,8 @@ Then use option A with the file it created.
 ## Step 5. Run the playbook
 
 ```bash
-ansible-playbook playbook.yml -i inventory/hosts.yml -K
+ansible-playbook playbook.yml -i inventory/hosts.yml -K \
+  --ssh-common-args="-o StrictHostKeyChecking=accept-new"
 ```
 
 What the parts mean:
@@ -171,9 +177,11 @@ What the parts mean:
 - `-K` asks you for the `sudo` password of the current user, because some
   steps need root rights (this is the password of the `ubuntu` or `debian`
   user, not a new one)
+- `--ssh-common-args=...` accepts the host key of a brand new server once
+  (host key checking is on by default). Drop this flag on every later run.
 
 The first run takes several minutes. It installs packages, downloads Docker,
-and applies the hardening. You will see every step print `ok` or `changed`.
+and applies the defaults. You will see every step print `ok` or `changed`.
 `changed` means "this step did something on this run". A second run prints
 `ok` everywhere.
 
@@ -184,11 +192,11 @@ The playbook has three parts, called plays:
 1. **Bootstrap.** It logs in as the user you put in the inventory, creates
    the `admin` user, gives it passwordless `sudo`, and installs the SSH key.
    If you chose option B, the key is generated now.
-2. **Harden and provision.** It reconnects as `admin` using the key. This is
-   deliberate: it proves key login works before anything is locked down.
-   Then it sets the timezone, updates packages, enables the firewall, applies
-   the SSH hardening, installs fail2ban, enables automatic security updates,
-   installs Docker, and installs node_exporter.
+2. **Configure and provision.** It reconnects as `admin` using the key. This
+   is deliberate: it proves key login works before anything is changed. Then
+   it sets the timezone, updates packages, enables the firewall, applies the
+   SSH and sysctl defaults, installs fail2ban, enables automatic security
+   updates, installs Docker, and installs node_exporter.
 3. **Verify.** It checks that the firewall is active, SSH login is key based
    only, Docker is running, fail2ban is running, and node_exporter answers on
    port 9100. If anything is wrong, the run fails loudly.
@@ -207,6 +215,12 @@ ssh -i keys/my-server/id_ed25519 admin@192.168.1.50
 The file `keys/my-server/id_ed25519` is your private key. Treat it like a
 password. It is ignored by git, so it will never end up in the repository.
 
+The old user still exists and still has sudo rights (they just cannot log in
+over SSH anymore). If you want them fully disabled - nologin shell, locked
+password, no sudo - set `original_user_lockout: true` in
+`inventory/group_vars/all.yml` and rerun. There is no going back from that
+without the provider console, so only do it once you know key login works.
+
 ## Rerunning the playbook
 
 The playbook is safe to run any time; it brings the server back to the
@@ -218,10 +232,12 @@ my-server:
   ansible_host: 192.168.1.50
   ansible_user: admin                        # changed from ubuntu
   ansible_ssh_private_key_file: keys/my-server/id_ed25519
+  ansible_port: 22                           # your ssh_port, if not default
 ```
 
-If you use your own key with the SSH agent, you can skip the last line.
-Then run the same command as before. Everything reports `ok`.
+If you use your own key with the SSH agent, you can skip the private key
+line. Then run the same command as before (minus the first-run host key
+flag). Everything reports `ok`.
 
 ## Running only part of the playbook
 
@@ -231,17 +247,18 @@ a setting, for example the firewall rules.
 | Tag | What it runs |
 |---|---|
 | `bootstrap` | Play 1: admin user, sudo, SSH key |
-| `user` | admin user, sudoers entry, SSH key |
-| `ssh` | SSH daemon hardening |
+| `user` | admin user, sudoers entry, SSH key, cloud user lockout |
+| `ssh` | SSH settings |
 | `ufw` | firewall rules |
-| `sysctl` | kernel and network hardening |
+| `sysctl` | kernel and network defaults |
 | `fail2ban` | login attempt blocker |
 | `unattended` | automatic security updates |
 | `docker` | Docker install and configuration |
 | `node_exporter` | monitoring agent and firewall rule |
+| `packages` | extra apt packages |
 | `upgrade` | package upgrade and reboot handling |
 | `verify` | Play 3, the health checks |
-| `baseline` | timezone and clock sync |
+| `baseline` | timezone, clock sync, hostname, locale, motd cleanup |
 | `apt-mirror` | apt mirror rewrite |
 
 Examples:
@@ -250,7 +267,7 @@ Examples:
 # only touch the firewall
 ansible-playbook playbook.yml -i inventory/hosts.yml -t ufw
 
-# only reapply SSH and firewall hardening
+# only reapply SSH and firewall defaults
 ansible-playbook playbook.yml -i inventory/hosts.yml -t ssh,ufw
 
 # only run the health checks
@@ -268,9 +285,16 @@ is explained right where it is. The most common ones:
 | `admin_user` | `admin` | the user created on the server |
 | `admin_ssh_public_key` | empty | your public key, or leave empty to generate one |
 | `ssh_port` | `22` | SSH port; set in the sshd config (`Port`) and opened in the firewall |
+| `ssh_allow_agent_forwarding` | `true` | allow SSH agent forwarding (set `false` for the strict profile) |
+| `original_user_lockout` | `false` | fully disable the original cloud user after Play 2 (nologin, no sudo, locked) |
 | `apt_mirror` | empty | an apt mirror URL, for example `https://mirror.example.org/ubuntu` |
 | `docker_registry_mirrors` | empty list | registry mirrors for Docker image pulls |
+| `docker_group_membership` | `true` | add `admin` to the `docker` group (effectively root - see below) |
 | `node_exporter_allow_cidr` | empty | who may read the metrics on port 9100. Empty keeps the port closed by the firewall. Set it to your monitoring server, for example `10.0.0.0/8`, to expose it. `0.0.0.0/0` opens it to the whole internet |
+| `extra_packages` | empty list | extra apt packages, for example `["htop", "curl", "jq", "vim"]` |
+| `hostname` | empty | set the hostname, for example `web-01` |
+| `locale` | empty | set the system locale, for example `en_US.UTF-8` |
+| `clear_motd` | `false` | remove dynamic motd scripts and blank `/etc/motd` and `/etc/issue` |
 | `ufw_extra_allow` | empty | extra open ports, for example `{"8080": tcp}` |
 | `unattended_reboot` | `true` | reboot automatically after security updates |
 | `timezone` | `UTC` | server timezone |
@@ -304,10 +328,12 @@ The same goes for `ufw_extra_allow` in JSON form:
 
 ### A note on the docker group
 
-The playbook adds `admin` to the `docker` group so you can run containers
-without `sudo`. Keep in mind that membership in the `docker` group is
-effectively root: anyone in it can start a container that mounts the host
-filesystem and gain full access to the box. Only add users you trust.
+By default the playbook adds `admin` to the `docker` group so you can run
+containers without `sudo`. Keep in mind that membership in the `docker`
+group is effectively root: anyone in it can start a container that mounts
+the host filesystem and gain full access to the box. Only add users you
+trust. If you do not want the admin user in the group, set
+`docker_group_membership: false`.
 
 ## Troubleshooting
 
@@ -322,9 +348,10 @@ filesystem and gain full access to the box. Only add users you trust.
   out after the first run. Switch `ansible_user` in the inventory to `admin`.
 - **`apt update` fails after you set a mirror.** The mirror must carry the
   main, security, and ports suites. Check with the mirror owner, or empty
-  `apt_mirror` to go back to the official archives. If the playbook warned
-  that the mirror rewrite matched nothing, the source file format probably
-  changed; check `/etc/apt/sources.list` and `/etc/apt/sources.list.d/`.
+  `apt_mirror` to go back to the official archives. If the playbook fails
+  because the mirror rewrite matched nothing, the source file format
+  probably changed; check `/etc/apt/sources.list` and
+  `/etc/apt/sources.list.d/` and adjust the rewrite in the playbook.
 - **Port 9100 not reachable from your monitoring server.** The default
   `node_exporter_allow_cidr` is empty, so ufw keeps the port closed (the
   verify play still checks metrics on localhost). Set the variable to your
@@ -332,11 +359,15 @@ filesystem and gain full access to the box. Only add users you trust.
 - **Port 9100 reachable from the whole internet.** You set
   `node_exporter_allow_cidr` to `0.0.0.0/0`. Restrict it to the IP range of
   your monitoring server instead.
-- **Host key warnings / `HOST KEY VERIFICATION FAILED`.** This project
-  disables SSH host key checking in `ansible.cfg`, because a fresh server
-  always has a new host key. If you prefer strict checking, set
-  `host_key_checking = True` and pass
-  `--ssh-common-args="-o StrictHostKeyChecking=accept-new"` on first runs.
+- **Host key warnings / `HOST KEY VERIFICATION FAILED`.** Host key checking
+  is on by default (`ansible.cfg`). A brand new server has a host key you
+  have never seen, so the very first run needs
+  `--ssh-common-args="-o StrictHostKeyChecking=accept-new"` - after that the
+  key is in your `known_hosts` and normal runs work without the flag.
+- **The original cloud user still has sudo rights.** That is intentional
+  until you say otherwise: they cannot log in over SSH (key-only login), but
+  the account is only fully disabled when you set
+  `original_user_lockout: true` and rerun.
 - **You are locked out of the server.** Go to your cloud provider's web
   console and run `rm /etc/ssh/sshd_config.d/99-hardening.conf`, then
   `systemctl restart ssh`. That restores password login, so you can get back
@@ -346,6 +377,15 @@ filesystem and gain full access to the box. Only add users you trust.
   ufw. Publish only the ports you need and put a reverse proxy in front of
   your containers.
 
+## Keeping it working
+
+`playbook.yml` is linted and syntax-checked in CI (`.github/workflows/ci.yml`)
+on every push, so a typo or a bad template breaks the build instead of a
+server. That does not prove the whole flow works on a real box - only a
+manual run against a fresh instance does. When you bump `node_exporter_version`,
+grab the new sha256 checksums from the release page and update them in
+`inventory/group_vars/all.yml` (the comments there say how).
+
 ## Files
 
 ```
@@ -353,9 +393,10 @@ playbook.yml                  the whole playbook, in three plays
 inventory/hosts.yml           where your servers are listed
 inventory/group_vars/all.yml  all settings and comments explaining them
 templates/                    sshd settings, Docker config, fail2ban, systemd units, sudoers
-files/                        sysctl hardening, apt update schedule
+files/                        sysctl defaults, apt update schedule
 requirements.yml              the Ansible collections this playbook needs
 ansible.cfg                   Ansible defaults for this project
+.github/workflows/ci.yml      lint and syntax checks
 keys/                         generated SSH keys, gitignored, created on first run
 ```
 

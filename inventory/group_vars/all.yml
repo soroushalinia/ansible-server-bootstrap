@@ -9,16 +9,26 @@
 admin_user: admin
 admin_sudo_nopasswd: true
 
+# Lock out the original cloud user (e.g. `ubuntu`/`debian`) once the admin
+# key works: shell set to nologin, password locked, sudo rights removed
+# (including the cloud-init sudoers entry). Set to true only after the first
+# run proves key login works - there is no going back without the console.
+original_user_lockout: false
+
 # SSH key for the admin user.
 #   - Set this to YOUR public key (string starting with ssh-ed25519/rsa/ecdsa).
 #   - Leave "" to have the playbook generate an ed25519 keypair locally under
 #     keys/<inventory_hostname>/ and print the public key at the end.
 admin_ssh_public_key: ""
 
-# SSH daemon hardening
+# SSH daemon settings
 ssh_port: 22
 ssh_password_auth: false
 ssh_permit_root_login: false
+# Agent/TCP forwarding: on by default - a personal bootstrap usually wants
+# them. Set to false if you want the strict locked-down profile.
+ssh_allow_agent_forwarding: true
+ssh_allow_tcp_forwarding: true
 ssh_allow_users: "{{ admin_user }}"   # space separated, or "" to skip AllowUsers
 ssh_allow_groups: ""                  # optional, e.g. "ssh-users". If both are
                                       # set, a user must match BOTH AllowUsers
@@ -28,7 +38,8 @@ ssh_login_grace_time: 30
 # Modern-only crypto, safe for OpenSSH 8.9+ (Ubuntu 22.04+, Debian 12+).
 # If you connect from an older client, add its algorithms to these lists
 # and rerun with -t ssh. sshd -t validates the file before it is applied.
-ssh_kex_algorithms: "curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group14-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521"
+ssh_kex_algorithms: "curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,\
+  diffie-hellman-group14-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521"
 ssh_ciphers: "chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com"
 ssh_macs: "hmac-sha2-256,hmac-sha2-512,hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,umac-128-etm@openssh.com,umac-128@openssh.com"
 
@@ -44,8 +55,13 @@ apt_mirror: ""
 docker_registry_mirrors: []
 # Set to false if you need --net=host or raw host networking edge cases.
 docker_live_restore: true
+# Add {{ admin_user }} to the docker group? Membership is effectively root:
+# anyone in the group can mount the host filesystem through a container.
+docker_group_membership: true
 
 # node_exporter (Prometheus)
+# To upgrade: bump the version and replace both checksums with the sha256 of
+# the matching tarballs from the release page, then rerun with -t node_exporter.
 node_exporter_version: "1.12.1"
 node_exporter_checksums:
   amd64: "b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63"
@@ -79,3 +95,9 @@ fail2ban_maxretry: "5"
 timezone: UTC
 # Reboot after apt upgrade when /var/run/reboot-required appears.
 allow_reboot: true
+
+# Optional day-one niceties (all off by default - enable only what you want)
+extra_packages: []        # extra apt packages, e.g. ["htop", "curl", "jq", "vim"]
+hostname: ""              # set the hostname, e.g. "web-01"; empty = leave as is
+locale: ""                # set the system locale, e.g. "en_US.UTF-8"; empty = leave as is
+clear_motd: false         # remove dynamic motd scripts, blank /etc/motd and /etc/issue

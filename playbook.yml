@@ -3,19 +3,21 @@
 # ansible-server-bootstrap
 #
 # One playbook: provision a fresh Ubuntu/Debian server on day one.
+# The defaults I always want, applied the same way every time:
 #   - admin user with key based SSH (password auth disabled)
 #   - ufw firewall (deny inbound, allow ssh + extras)
-#   - kernel and network hardening (sysctl)
+#   - kernel and network defaults (sysctl)
 #   - fail2ban (ufw backend)
 #   - unattended-upgrades (security only, optional auto reboot)
 #   - Docker from the official repo (plus optional registry mirrors)
 #   - node_exporter for Prometheus
+# Everything optional is off by default - see inventory/group_vars/all.yml.
 #
 # Safe to rerun: every task is idempotent. Use --tags to reapply subsets.
 #
 # Plays:
 #   1. Bootstrap: connects as your CURRENT user, creates {{ admin_user }}
-#   2. Harden: reconnects as {{ admin_user }}, does the work
+#   2. Configure: reconnects as {{ admin_user }}, does the work
 #   3. Verify: asserts everything is up and reports
 # ============================================================================
 
@@ -37,6 +39,11 @@
         fail_msg: "This playbook supports Ubuntu 22.04/24.04 or Debian 12/13 (got {{ ansible_distribution }} {{ ansible_distribution_version }})"
 
   tasks:
+    - name: Remember which user we connected as (the cloud default user)
+      ansible.builtin.set_fact:
+        bootstrap_cloud_user: "{{ ansible_user }}"
+      tags: [bootstrap]
+
     - name: Check for apt source files
       ansible.builtin.stat:
         path: "{{ item }}"
@@ -47,21 +54,10 @@
       register: apt_sources
       tags: [apt-mirror]
 
-    - name: "Rewrite Ubuntu apt sources to {{ apt_mirror }}"
+    - name: "Rewrite apt sources to {{ apt_mirror }}"
       ansible.builtin.replace:
         path: "{{ item }}"
-        regexp: "https?://[a-z0-9.\\-]+\\.ubuntu\\.com/ubuntu(-ports)?/?"
-        replace: "{{ apt_mirror }}"
-      loop: "{{ apt_sources.results | selectattr('stat.exists', 'equalto', true) | map(attribute='item') | list }}"
-      loop_control:
-        label: "{{ item }}"
-      when: apt_mirror | length > 0
-      tags: [apt-mirror]
-
-    - name: "Rewrite Debian apt sources to {{ apt_mirror }}"
-      ansible.builtin.replace:
-        path: "{{ item }}"
-        regexp: "https?://[a-z0-9.\\-]+\\.debian\\.org/(debian|debian-security|debian-ports)/?"
+        regexp: "https?://[a-z0-9.\\-]+\\.(ubuntu|debian)\\.org/(ubuntu(-ports)?|debian(-security|-ports)?)/?"
         replace: "{{ apt_mirror }}"
       loop: "{{ apt_sources.results | selectattr('stat.exists', 'equalto', true) | map(attribute='item') | list }}"
       loop_control:
@@ -77,8 +73,8 @@
       when: apt_mirror | length > 0
       tags: [apt-mirror]
 
-    - name: Warn if the apt mirror rewrite matched nothing
-      ansible.builtin.debug:
+    - name: Fail if the apt mirror rewrite matched nothing
+      ansible.builtin.fail:
         msg: |
           apt_mirror is set to {{ apt_mirror }}, but none of the apt source
           files matched the known archive URL patterns and the mirror is not
@@ -144,7 +140,7 @@
       tags: [user]
 
     - name: Install admin SSH public key
-      ansible.builtin.authorized_key:
+      ansible.posix.authorized_key:
         user: "{{ admin_user }}"
         key: "{{ admin_ssh_public_key if admin_ssh_public_key | length > 0 else lookup('file', admin_ssh_key_path ~ '.pub') }}"
         state: present
@@ -160,7 +156,7 @@
       when: admin_ssh_public_key | length == 0 and admin_key_gen.changed
       tags: [user]
 
-- name: "Harden and provision"
+- name: "Configure and provision"
   hosts: all
   gather_facts: true
   become: true
@@ -203,6 +199,72 @@
         enabled: true
       tags: [baseline]
 
+    - name: "Set hostname to {{ hostname }}"
+      ansible.builtin.hostname:
+        name: "{{ hostname }}"
+      when: hostname | length > 0
+      tags: [baseline]
+
+    - name: Install locale support
+      ansible.builtin.apt:
+        name: locales
+        state: present
+      when: locale | length > 0
+      tags: [baseline]
+
+    - name: "Generate locale {{ locale }}"
+      community.general.locale_gen:
+        name: "{{ locale }}"
+        state: present
+      when: locale | length > 0
+      tags: [baseline]
+
+    - name: "Set system locale to {{ locale }}"
+      ansible.builtin.lineinfile:
+        path: /etc/default/locale
+        regexp: "^LANG="
+        line: "LANG={{ locale }}"
+        create: true
+        mode: "0644"
+      when: locale | length > 0
+      tags: [baseline]
+
+    - name: Check for /etc/update-motd.d
+      ansible.builtin.stat:
+        path: /etc/update-motd.d
+      register: motd_dir
+      when: clear_motd
+      tags: [baseline]
+
+    - name: Find dynamic motd scripts
+      ansible.builtin.find:
+        paths: /etc/update-motd.d
+        file_type: file
+      register: motd_scripts
+      when: clear_motd and motd_dir.stat.exists
+      tags: [baseline]
+
+    - name: Remove dynamic motd scripts
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ motd_scripts.files }}"
+      when: clear_motd and motd_dir.stat.exists
+      tags: [baseline]
+
+    - name: Clear /etc/motd and /etc/issue
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ item }}"
+        mode: "0644"
+        owner: root
+        group: root
+      loop:
+        - /etc/motd
+        - /etc/issue
+      when: clear_motd
+      tags: [baseline]
+
     - name: Upgrade installed packages (safe)
       ansible.builtin.apt:
         upgrade: safe
@@ -225,7 +287,15 @@
         - apt_upgrade.changed
       tags: [upgrade]
 
-    # 
+    - name: "Install extra packages ({{ extra_packages | join(', ') }})"
+      ansible.builtin.apt:
+        name: "{{ extra_packages }}"
+        state: present
+        update_cache: true
+      when: extra_packages | length > 0
+      tags: [packages]
+
+    #
     - name: Install ufw
       ansible.builtin.apt:
         name: ufw
@@ -265,7 +335,7 @@
         state: enabled
       tags: [ufw]
 
-    # 
+    #
     - name: Include sshd_config.d drop-ins
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
@@ -274,7 +344,7 @@
         state: present
       tags: [ssh]
 
-    - name: Deploy sshd hardening drop-in
+    - name: Deploy SSH settings drop-in
       ansible.builtin.template:
         src: 99-ssh-hardening.conf.j2
         dest: /etc/ssh/sshd_config.d/99-hardening.conf
@@ -285,8 +355,8 @@
       notify: Restart sshd
       tags: [ssh]
 
-    # 
-    - name: Deploy sysctl hardening
+    #
+    - name: Deploy sysctl defaults
       ansible.builtin.copy:
         src: 99-hardening.conf
         dest: /etc/sysctl.d/99-hardening.conf
@@ -300,7 +370,7 @@
       changed_when: false
       tags: [sysctl]
 
-    # 
+    #
     - name: Install fail2ban
       ansible.builtin.apt:
         name: fail2ban
@@ -325,7 +395,7 @@
         enabled: true
       tags: [fail2ban]
 
-    # 
+    #
     - name: Install unattended-upgrades
       ansible.builtin.apt:
         name: unattended-upgrades
@@ -367,7 +437,7 @@
         state: present
       tags: [unattended]
 
-    # 
+    #
     - name: Install Docker prerequisites (gpg, ca-certificates)
       ansible.builtin.apt:
         name:
@@ -388,7 +458,11 @@
 
     - name: Add Docker apt repository
       ansible.builtin.apt_repository:
-        repo: "deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+        repo: >-
+          deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}
+          signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/{{ ansible_distribution | lower }}
+          {{ ansible_distribution_release }} stable
         state: present
         update_cache: true
       tags: [docker]
@@ -434,53 +508,62 @@
         enabled: true
       tags: [docker]
 
-    - name: "Add {{ admin_user }} to docker group"
+    - name: Add admin user to docker group
       ansible.builtin.user:
         name: "{{ admin_user }}"
         groups: docker
         append: true
+      when: docker_group_membership
       tags: [docker]
 
-    # 
+    #
     - name: Map architecture
       ansible.builtin.set_fact:
         node_exporter_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}"
       tags: [node_exporter]
 
-    - name: Download node_exporter {{ node_exporter_version }}
-      ansible.builtin.get_url:
-        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}.tar.gz"
-        dest: "/tmp/node_exporter-{{ node_exporter_version }}.tar.gz"
-        checksum: "sha256:{{ node_exporter_checksums[node_exporter_arch] }}"
-        mode: "0644"
+    - name: Check for installed node_exporter binary
+      ansible.builtin.stat:
+        path: /usr/local/bin/node_exporter
+      register: node_exporter_bin
       tags: [node_exporter]
 
-    - name: Extract node_exporter
-      ansible.builtin.unarchive:
-        src: "/tmp/node_exporter-{{ node_exporter_version }}.tar.gz"
-        dest: /opt
-        remote_src: true
-        mode: "0755"
+    - name: "Install node_exporter {{ node_exporter_version }}"
+      when: not node_exporter_bin.stat.exists
       tags: [node_exporter]
+      block:
+        - name: Download node_exporter tarball
+          ansible.builtin.get_url:
+            url: >-
+              https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}
+              /node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}.tar.gz
+            dest: "/tmp/node_exporter-{{ node_exporter_version }}.tar.gz"
+            checksum: "sha256:{{ node_exporter_checksums[node_exporter_arch] }}"
+            mode: "0644"
 
-    - name: Install node_exporter binary
-      ansible.builtin.copy:
-        src: "/opt/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}/node_exporter"
-        dest: /usr/local/bin/node_exporter
-        remote_src: true
-        mode: "0755"
-        owner: root
-        group: root
-      tags: [node_exporter]
+        - name: Extract node_exporter
+          ansible.builtin.unarchive:
+            src: "/tmp/node_exporter-{{ node_exporter_version }}.tar.gz"
+            dest: /opt
+            remote_src: true
+            mode: "0755"
 
-    - name: Remove node_exporter tarball and extracted directory
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "/tmp/node_exporter-{{ node_exporter_version }}.tar.gz"
-        - "/opt/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}"
-      tags: [node_exporter]
+        - name: Copy node_exporter binary into place
+          ansible.builtin.copy:
+            src: "/opt/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}/node_exporter"
+            dest: /usr/local/bin/node_exporter
+            remote_src: true
+            mode: "0755"
+            owner: root
+            group: root
+
+        - name: Remove node_exporter tarball and extracted directory
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "/tmp/node_exporter-{{ node_exporter_version }}.tar.gz"
+            - "/opt/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}"
 
     - name: Create node_exporter service account
       ansible.builtin.user:
@@ -536,7 +619,31 @@
       when: node_exporter_allow_cidr | length == 0
       tags: [node_exporter]
 
-- name: "Verify the hardened box"
+    #
+    - name: "Lock out the original cloud user ({{ bootstrap_cloud_user }})"
+      ansible.builtin.user:
+        name: "{{ bootstrap_cloud_user }}"
+        shell: /usr/sbin/nologin
+        password: "!"
+        groups: []
+        append: false
+      when:
+        - original_user_lockout
+        - bootstrap_cloud_user is defined
+        - bootstrap_cloud_user != admin_user
+      tags: [user]
+
+    - name: Remove cloud-init sudoers entry for the original user
+      ansible.builtin.file:
+        path: /etc/sudoers.d/90-cloud-init-users
+        state: absent
+      when:
+        - original_user_lockout
+        - bootstrap_cloud_user is defined
+        - bootstrap_cloud_user != admin_user
+      tags: [user]
+
+- name: "Verify the box"
   hosts: all
   gather_facts: true
   become: true
@@ -568,23 +675,35 @@
       register: node_exporter_probe
       tags: [verify]
 
-    - name: Assert all services are healthy
+    - name: Normalize sshd -T output for assertions
+      ansible.builtin.set_fact:
+        sshd_effective: "{{ verify_results.results[6].stdout | lower }}"
+      tags: [verify]
+
+    - name: Assert services are healthy
       ansible.builtin.assert:
         that:
-          - '"Status: active" in verify_results.results[0].stdout'
+          - '"status: active" in (verify_results.results[0].stdout | lower)'
           - verify_results.results[1].stdout == "active"
           - verify_results.results[2].stdout == "active"
           - verify_results.results[3].stdout == "active"
           - verify_results.results[4].stdout == "active"
           - verify_results.results[5].stdout == "active"
-          - '"passwordauthentication no" in verify_results.results[6].stdout'
-          - '"permitrootlogin no" in verify_results.results[6].stdout'
-          - ('"authenticationmethods publickey" in verify_results.results[6].stdout') if not ssh_password_auth else true
-          - ('"allowusers {{ admin_user }}" in verify_results.results[6].stdout') if ssh_allow_users | length > 0 else true
           - node_exporter_probe.status == 200
           - '"node_boot_time_seconds" in node_exporter_probe.content'
-        fail_msg: "Hardening verification FAILED. Inspect the box."
-        success_msg: "All checks passed. Box is hardened."
+        fail_msg: "Bootstrap verification FAILED: a service is not healthy. Inspect the box."
+        success_msg: "All services are healthy."
+      tags: [verify]
+
+    - name: Assert SSH settings are in effect
+      ansible.builtin.assert:
+        that:
+          - ('"passwordauthentication no" in sshd_effective') if not ssh_password_auth else ('"passwordauthentication yes" in sshd_effective')
+          - ('"permitrootlogin no" in sshd_effective') if not ssh_permit_root_login else ('"permitrootlogin yes" in sshd_effective')
+          - ('"authenticationmethods publickey" in sshd_effective') if not ssh_password_auth else ('"authenticationmethods" not in sshd_effective')
+          - ('"allowusers {{ ssh_allow_users }}" in sshd_effective') if ssh_allow_users | length > 0 else ('"allowusers" not in sshd_effective')
+        fail_msg: "Bootstrap verification FAILED: sshd -T does not match the configured settings. Inspect the box."
+        success_msg: "SSH settings are in effect."
       tags: [verify]
 
     - name: Show final state
@@ -596,6 +715,6 @@
           docker:     {{ verify_results.results[3].stdout }}
           apt-daily-upgrade.timer: {{ verify_results.results[4].stdout }}
           node_exporter: {{ verify_results.results[5].stdout }} (probe: HTTP {{ node_exporter_probe.status }})
-          sshd -T:    passwordauthentication/permitrootlogin/authenticationmethods enforced (verified)
+          sshd -T:    passwordauthentication/permitrootlogin/authenticationmethods/allowusers verified
           admin user: {{ admin_user }}
       tags: [verify]
