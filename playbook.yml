@@ -41,7 +41,7 @@
   tasks:
     - name: Remember which user we connected as (the cloud default user)
       ansible.builtin.set_fact:
-        bootstrap_cloud_user: "{{ ansible_user }}"
+        bootstrap_cloud_user: "{{ original_cloud_user if original_cloud_user | length > 0 else ansible_user }}"
       tags: [bootstrap]
 
     - name: Check for apt source files
@@ -344,10 +344,16 @@
         state: present
       tags: [ssh]
 
+    - name: Remove stale drop-in from the old file name
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/99-hardening.conf
+        state: absent
+      tags: [ssh]
+
     - name: Deploy SSH settings drop-in
       ansible.builtin.template:
-        src: 99-ssh-hardening.conf.j2
-        dest: /etc/ssh/sshd_config.d/99-hardening.conf
+        src: 99-ssh.conf.j2
+        dest: /etc/ssh/sshd_config.d/99-ssh.conf
         mode: "0644"
         owner: root
         group: root
@@ -356,10 +362,16 @@
       tags: [ssh]
 
     #
+    - name: Remove stale sysctl file from the old file name
+      ansible.builtin.file:
+        path: /etc/sysctl.d/99-hardening.conf
+        state: absent
+      tags: [sysctl]
+
     - name: Deploy sysctl defaults
       ansible.builtin.copy:
-        src: 99-hardening.conf
-        dest: /etc/sysctl.d/99-hardening.conf
+        src: 99-sysctl.conf
+        dest: /etc/sysctl.d/99-sysctl.conf
         mode: "0644"
         owner: root
         group: root
@@ -675,9 +687,25 @@
       register: node_exporter_probe
       tags: [verify]
 
-    - name: Normalize sshd -T output for assertions
+    - name: Split sshd -T output into lines
       ansible.builtin.set_fact:
-        sshd_effective: "{{ verify_results.results[6].stdout | lower }}"
+        sshd_lines: "{{ (verify_results.results[6].stdout | lower).split('\n') }}"
+      tags: [verify]
+
+    - name: Extract effective SSH settings from sshd -T
+      ansible.builtin.set_fact:
+        sshd_pw_auth: >-
+          {{ (sshd_lines | select('match', '^passwordauthentication\\s.*') | list | join(''))
+          | regex_replace('^passwordauthentication\\s+', '') | default('absent', true) }}
+        sshd_root_login: >-
+          {{ (sshd_lines | select('match', '^permitrootlogin\\s.*') | list | join(''))
+          | regex_replace('^permitrootlogin\\s+', '') | default('absent', true) }}
+        sshd_auth_methods: >-
+          {{ (sshd_lines | select('match', '^authenticationmethods\\s.*') | list | join(''))
+          | regex_replace('^authenticationmethods\\s+', '') | default('absent', true) }}
+        sshd_allow_users: >-
+          {{ (sshd_lines | select('match', '^allowusers\\s.*') | list | join(''))
+          | regex_replace('^allowusers\\s+', '') | default('absent', true) }}
       tags: [verify]
 
     - name: Assert services are healthy
@@ -698,10 +726,10 @@
     - name: Assert SSH settings are in effect
       ansible.builtin.assert:
         that:
-          - ('"passwordauthentication no" in sshd_effective') if not ssh_password_auth else ('"passwordauthentication yes" in sshd_effective')
-          - ('"permitrootlogin no" in sshd_effective') if not ssh_permit_root_login else ('"permitrootlogin yes" in sshd_effective')
-          - ('"authenticationmethods publickey" in sshd_effective') if not ssh_password_auth else ('"authenticationmethods" not in sshd_effective')
-          - ('"allowusers {{ ssh_allow_users }}" in sshd_effective') if ssh_allow_users | length > 0 else ('"allowusers" not in sshd_effective')
+          - sshd_pw_auth == "{{ 'no' if not ssh_password_auth else 'yes' }}"
+          - sshd_root_login == "{{ 'no' if not ssh_permit_root_login else 'yes' }}"
+          - sshd_auth_methods == "{{ 'publickey' if not ssh_password_auth else 'absent' }}"
+          - sshd_allow_users == "{{ ssh_allow_users if ssh_allow_users | length > 0 else 'absent' }}"
         fail_msg: "Bootstrap verification FAILED: sshd -T does not match the configured settings. Inspect the box."
         success_msg: "SSH settings are in effect."
       tags: [verify]

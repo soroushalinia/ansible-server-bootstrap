@@ -220,6 +220,9 @@ over SSH anymore). If you want them fully disabled - nologin shell, locked
 password, no sudo - set `original_user_lockout: true` in
 `inventory/group_vars/all.yml` and rerun. There is no going back from that
 without the provider console, so only do it once you know key login works.
+If you enable it on a *later* run (the inventory user is `admin` by then),
+also set `original_cloud_user` to the cloud user's name, for example
+`ubuntu` - that is what Play 1 remembered automatically on the first run.
 
 ## Rerunning the playbook
 
@@ -287,6 +290,7 @@ is explained right where it is. The most common ones:
 | `ssh_port` | `22` | SSH port; set in the sshd config (`Port`) and opened in the firewall |
 | `ssh_allow_agent_forwarding` | `true` | allow SSH agent forwarding (set `false` for the strict profile) |
 | `original_user_lockout` | `false` | fully disable the original cloud user after Play 2 (nologin, no sudo, locked) |
+| `original_cloud_user` | empty | cloud user name for lockout on re-runs (inventory user is `admin` by then), e.g. `ubuntu` |
 | `apt_mirror` | empty | an apt mirror URL, for example `https://mirror.example.org/ubuntu` |
 | `docker_registry_mirrors` | empty list | registry mirrors for Docker image pulls |
 | `docker_group_membership` | `true` | add `admin` to the `docker` group (effectively root - see below) |
@@ -369,7 +373,7 @@ trust. If you do not want the admin user in the group, set
   the account is only fully disabled when you set
   `original_user_lockout: true` and rerun.
 - **You are locked out of the server.** Go to your cloud provider's web
-  console and run `rm /etc/ssh/sshd_config.d/99-hardening.conf`, then
+  console and run `rm /etc/ssh/sshd_config.d/99-ssh.conf`, then
   `systemctl restart ssh`. That restores password login, so you can get back
   in and fix whatever went wrong.
 - **Docker published ports are not filtered by the firewall.** This is

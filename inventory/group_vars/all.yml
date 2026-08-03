@@ -14,6 +14,11 @@ admin_sudo_nopasswd: true
 # (including the cloud-init sudoers entry). Set to true only after the first
 # run proves key login works - there is no going back without the console.
 original_user_lockout: false
+# Name of the cloud default user. Play 1 remembers who it connected as, but
+# on RE-RUNS the inventory user is already `admin`, so that memory is lost.
+# If you enable original_user_lockout on a later run, set this explicitly,
+# e.g. original_cloud_user: "ubuntu".
+original_cloud_user: ""
 
 # SSH key for the admin user.
 #   - Set this to YOUR public key (string starting with ssh-ed25519/rsa/ecdsa).
